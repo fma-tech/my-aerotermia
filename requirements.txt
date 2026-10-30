@@ -1,0 +1,3 @@
+# Packaged into the Lambda zip (boto3 is already provided by the Lambda runtime)
+aioaquarea-ng==1.5.0
+cryptography
