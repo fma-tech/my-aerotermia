@@ -30,6 +30,9 @@ Environment variables:
   OAUTH_CLIENT_ID      must match the Client ID set in the Alexa console
   OAUTH_CLIENT_SECRET  must match the Client Secret set in the Alexa console
   NAME_COOL / NAME_HEAT / NAME_DHW   optional device names shown in Alexa
+  INVITE_CODE          optional: community code asked before the Panasonic sign-in
+  REVIEW_CODE          optional: secret code that links a simulated heat pump
+                       (for Amazon certification reviewers; no real device)
 """
 
 from __future__ import annotations
@@ -43,6 +46,7 @@ import html
 import json
 import logging
 import os
+import re
 import secrets
 import time
 import urllib.parse
@@ -73,6 +77,10 @@ logging.getLogger("aioaquarea").setLevel(logging.WARNING)
 TABLE_NAME = os.environ.get("TABLE_NAME", "aquarea-alexa")
 OAUTH_CLIENT_ID = os.environ.get("OAUTH_CLIENT_ID", "")
 OAUTH_CLIENT_SECRET = os.environ.get("OAUTH_CLIENT_SECRET", "")
+INVITE_CODE = os.environ.get("INVITE_CODE", "")
+REVIEW_CODE = os.environ.get("REVIEW_CODE", "")
+DEMO_UID = "demo-reviewer"
+DEMO_LONG_ID = "DEMO000001"
 NAMES = {
     "cool": os.environ.get("NAME_COOL", "Aerotermia Frío"),
     "heat": os.environ.get("NAME_HEAT", "Aerotermia Calor"),
@@ -223,6 +231,45 @@ _sessions: dict[str, dict] = {}      # uid -> {"session", "client", "devices", "
 _pending_mfa: dict[str, dict] = {}   # nonce -> pending login
 
 
+# --------------------------------------------------------------------------
+# Simulated heat pump for Amazon certification reviewers (REVIEW_CODE)
+# State lives in DynamoDB item "demo#state"; no real device is ever touched.
+# --------------------------------------------------------------------------
+class _Obj:
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+
+
+class DemoClient:
+    async def get_devices(self):
+        return [_Obj(long_id=DEMO_LONG_ID, name="Demo heat pump", has_tank=True,
+                     zones=[_Obj(cool_mode=True)])]
+
+    async def get_device(self, device_info=None, **_):
+        st = table().get_item(Key={"pk": "demo#state"}).get("Item") or {}
+        zone = _Obj(operation_status=OperationStatus(int(st.get("zone", 0))),
+                    heat_target_temperature=0, cool_target_temperature=22,
+                    supports_set_temperature=True, temperature=24)
+        return _Obj(long_id=DEMO_LONG_ID, device_name="Demo heat pump",
+                    zones={1: zone}, mode=ExtendedOperationMode(int(st.get("mode", 2))),
+                    has_tank=True, support_cooling=True,
+                    tank=_Obj(operation_status=OperationStatus(int(st.get("tank", 1)))))
+
+    async def post_device_operation_update(self, long_id, mode, zones, operation_status,
+                                           tank_operation_status, setpoints=None):
+        ext = {UpdateOperationMode.HEAT: ExtendedOperationMode.HEAT,
+               UpdateOperationMode.COOL: ExtendedOperationMode.COOL,
+               UpdateOperationMode.AUTO: ExtendedOperationMode.AUTO_HEAT,
+               UpdateOperationMode.OFF: ExtendedOperationMode.OFF}[mode]
+        table().put_item(Item={"pk": "demo#state", "zone": int(zones.get(1, 0)),
+                               "mode": int(ext), "tank": int(tank_operation_status)})
+
+
+def save_demo_user() -> None:
+    table().put_item(Item={"pk": f"user#{DEMO_UID}", "email": "amazon-reviewer",
+                           "demo": True, "revoked": False, "updated": now()})
+
+
 async def panasonic_for(uid: str) -> dict:
     cached = _sessions.get(uid)
     if cached:
@@ -231,6 +278,10 @@ async def panasonic_for(uid: str) -> dict:
     user = get_user(uid)
     if not user or user.get("revoked"):
         raise LinkError("unknown or revoked user")
+    if user.get("demo"):
+        entry = {"session": None, "client": DemoClient(), "devices": None, "devices_at": 0}
+        _sessions[uid] = entry
+        return entry
     try:
         rt = fernet().decrypt(user["rt"].encode()).decode()
     except InvalidToken as err:
@@ -263,7 +314,7 @@ async def panasonic_for(uid: str) -> dict:
 
 async def drop_session(uid: str) -> None:
     entry = _sessions.pop(uid, None)
-    if entry:
+    if entry and entry["session"]:
         await entry["session"].close()
 
 
@@ -551,6 +602,10 @@ TEXTS = {
                            "(use SMS or an authenticator app).",
         "error": "Something went wrong. Please try again.",
         "bad_request": "Invalid request. Start the linking from the Alexa app.",
+        "invite_title": "Community code",
+        "invite_intro": "This skill is private. Enter the code your community gave you.",
+        "invite_label": "Code", "invite_submit": "Continue",
+        "bad_invite": "Invalid code.",
     },
     "es": {
         "title": "Vincula tu aerotermia",
@@ -570,6 +625,10 @@ TEXTS = {
                            "(usa SMS o una app de códigos).",
         "error": "Algo ha fallado. Inténtalo de nuevo.",
         "bad_request": "Petición no válida. Empieza la vinculación desde la app de Alexa.",
+        "invite_title": "Código de la comunidad",
+        "invite_intro": "Esta skill es privada. Introduce el código que te ha dado tu comunidad.",
+        "invite_label": "Código", "invite_submit": "Continuar",
+        "bad_invite": "Código no válido.",
     },
 }
 
@@ -619,6 +678,50 @@ def login_page(lang: str, params: dict, error: str | None = None, email: str = "
             f'<button type="submit">{t["submit"]}</button></form>'
             f'<p class="small">{t["privacy"]}</p>')
     return page(lang, body, 400 if error == "bad_request" else 200)
+
+
+def norm_code(value: str) -> str:
+    return re.sub(r"[\s\-_.]", "", value or "").casefold()
+
+
+def code_kind(value: str) -> str | None:
+    """'review' for the reviewer code, 'invite' for the community code, else None."""
+    v = norm_code(value)
+    if REVIEW_CODE and v and hmac.compare_digest(v, norm_code(REVIEW_CODE)):
+        return "review"
+    if not INVITE_CODE:
+        return "invite"            # no community code configured: open sign-in
+    if v and hmac.compare_digest(v, norm_code(INVITE_CODE)):
+        return "invite"
+    return None
+
+
+def codes_enabled() -> bool:
+    return bool(INVITE_CODE or REVIEW_CODE)
+
+
+def code_page(lang: str, params: dict, error: str | None = None) -> dict:
+    t = TEXTS[lang]
+    err = f'<p class="err">{html.escape(t[error])}</p>' if error else ""
+    body = (f"<h1>{t['invite_title']}</h1><p>{t['invite_intro']}</p>{err}"
+            f'<form method="post" action="/authorize/code">{hidden(params)}'
+            f'<label for="i">{t["invite_label"]}</label>'
+            f'<input id="i" name="invite" autocomplete="off" autocapitalize="characters" required>'
+            f'<button type="submit">{t["invite_submit"]}</button></form>')
+    return page(lang, body)
+
+
+def http_code_post(lang: str, form: dict) -> dict:
+    params = oauth_params(form)
+    if not params:
+        return message_page(lang, "bad_request")
+    kind = code_kind(form.get("invite", ""))
+    if kind == "review":
+        save_demo_user()
+        return redirect_with_code(params, DEMO_UID)
+    if kind == "invite":
+        return login_page(lang, {**params, "invite": form.get("invite", "")})
+    return code_page(lang, params, "bad_invite")
 
 
 def mfa_page(lang: str, nonce: str, destination: str | None, error: str | None = None) -> dict:
@@ -687,6 +790,9 @@ async def http_authorize_post(lang: str, form: dict) -> dict:
     params = oauth_params(form)
     if not params:
         return message_page(lang, "bad_request")
+    if code_kind(form.get("invite", "")) != "invite":
+        return code_page(lang, params, "bad_invite" if form.get("invite") else None)
+    params = {**params, "invite": form.get("invite", "")}
     email = (form.get("email") or "").strip()
     password = form.get("password") or ""
     if not email or not password:
@@ -812,9 +918,11 @@ def handle_http(event: dict) -> dict:
         params = oauth_params(event.get("queryStringParameters") or {})
         if not params:
             return message_page(lang, "bad_request")
-        return login_page(lang, params)
+        return code_page(lang, params) if codes_enabled() else login_page(lang, params)
     if path == "/authorize" and method == "POST":
         return LOOP.run_until_complete(http_authorize_post(lang, parse_form(event)))
+    if path == "/authorize/code" and method == "POST":
+        return http_code_post(lang, parse_form(event))
     if path == "/authorize/mfa" and method == "POST":
         return LOOP.run_until_complete(http_mfa_post(lang, parse_form(event)))
     if path == "/token" and method == "POST":
