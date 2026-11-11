@@ -126,4 +126,17 @@ admin(action="create", count=4)
 ok(admin(action="delete", all="yes")["ok"] is False, "delete all needs all: true (boolean)")
 r = admin(action="delete", all=True)
 ok(r["ok"] and len(r["deleted"]) == 5 and admin(action="list")["total"] == 0, "delete all")
+r = admin(action="create", labels=["Z 1º 1ª"]); Z = r["created"][0]["code"]
+TZ = tokens_for(link(Z, "zoe@x.com"))
+r = admin(action="forget", email="ZOE@x.com")
+ok(r["ok"] and r["erased"] and "user#" + L.user_id_for("zoe@x.com") not in TABLE.d, "forget erases user data")
+ok(all("zoe@x.com" not in json.dumps(v) for v in TABLE.d.values()), "no trace of the email left")
+r = directive("Alexa", "ReportState", TZ["access_token"], "DEMO000001_dhw")
+ok(r["event"]["payload"].get("type") == "INVALID_AUTHORIZATION_CREDENTIAL", "forgotten household stops working")
+L.CONTACT_EMAIL = "hola@example.com"
+r = http("GET", "/privacy")
+ok(r["statusCode"] == 200 and "Política de privacidad" in r["body"] and "hola@example.com" in r["body"]
+   and "nunca se guarda" in r["body"], "privacy page in Spanish with contact email")
+r = http("GET", "/privacy", query={"lang": "en"})
+ok("Privacy policy" in r["body"] and "never stored" in r["body"], "privacy page in English via ?lang=en")
 print("\nFAILS:", fails)

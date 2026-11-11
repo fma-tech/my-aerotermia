@@ -34,6 +34,8 @@ Environment variables:
   OPEN_SIGNUP          "true" to allow linking without any code (default: code required)
   Personal codes       10-digit codes, one per household, managed with admin events
                        run from the Lambda console "Test" tab (see handle_admin)
+  CONTACT_EMAIL        contact address shown in the privacy policy (/privacy)
+  OWNER_NAME           data controller name shown in the privacy policy
   REVIEW_CODE          optional: secret code that links a simulated heat pump
                        (for Amazon certification reviewers; no real device)
 """
@@ -83,6 +85,9 @@ OAUTH_CLIENT_SECRET = os.environ.get("OAUTH_CLIENT_SECRET", "")
 INVITE_CODE = os.environ.get("INVITE_CODE", "")
 REVIEW_CODE = os.environ.get("REVIEW_CODE", "")
 OPEN_SIGNUP = os.environ.get("OPEN_SIGNUP", "").lower() == "true"
+CONTACT_EMAIL = os.environ.get("CONTACT_EMAIL", "")
+OWNER_NAME = os.environ.get("OWNER_NAME", "Ferran Moreno")
+PRIVACY_UPDATED = "2026-11-12"
 INVITE_INDEX = "invites#index"
 DEMO_UID = "demo-reviewer"
 DEMO_LONG_ID = "DEMO000001"
@@ -612,6 +617,7 @@ TEXTS = {
         "intro": "Sign in with the Panasonic ID you use in the Comfort Cloud app.",
         "email": "Email", "password": "Password", "submit": "Link account",
         "privacy": "Your password is only used now to sign in to Panasonic and is never stored.",
+        "privacy_link": "Privacy policy",
         "mfa_title": "Verification code",
         "mfa_intro": "Panasonic sent you a verification code{dest}. Enter it below.",
         "code": "Code", "mfa_submit": "Verify",
@@ -636,6 +642,7 @@ TEXTS = {
         "intro": "Inicia sesión con el Panasonic ID que usas en la app Comfort Cloud.",
         "email": "Email", "password": "Contraseña", "submit": "Vincular cuenta",
         "privacy": "Tu contraseña solo se usa ahora para entrar en Panasonic y nunca se guarda.",
+        "privacy_link": "Política de privacidad",
         "mfa_title": "Código de verificación",
         "mfa_intro": "Panasonic te ha enviado un código de verificación{dest}. Escríbelo aquí.",
         "code": "Código", "mfa_submit": "Verificar",
@@ -705,7 +712,7 @@ def login_page(lang: str, params: dict, error: str | None = None, email: str = "
             f'<label for="p">{t["password"]}</label>'
             f'<input id="p" name="password" type="password" autocomplete="current-password" required>'
             f'<button type="submit">{t["submit"]}</button></form>'
-            f'<p class="small">{t["privacy"]}</p>')
+            f'<p class="small">{t["privacy"]} <a href="/privacy">{t["privacy_link"]}</a></p>')
     return page(lang, body, 400 if error == "bad_request" else 200)
 
 
@@ -777,6 +784,126 @@ def mfa_page(lang: str, nonce: str, destination: str | None, error: str | None =
             f'<input id="c" name="code" inputmode="numeric" autocomplete="one-time-code" required>'
             f'<button type="submit">{t["mfa_submit"]}</button></form>')
     return page(lang, body)
+
+
+PRIVACY = {
+    "es": {
+        "title": "Política de privacidad — My Aerotermia",
+        "sections": [
+            ("Quién es el responsable",
+             "My Aerotermia es una skill privada de Alexa desarrollada y gestionada por "
+             "{owner}, a título particular. Contacto: {email}."),
+            ("Qué hace la skill",
+             "Permite controlar desde Alexa una bomba de calor (aerotermia) Panasonic Aquarea "
+             "conectada a Panasonic Comfort Cloud: encender o apagar la climatización en frío o "
+             "en calor y el agua caliente sanitaria. Es un proyecto independiente, no afiliado a "
+             "Panasonic ni respaldado por Panasonic."),
+            ("Qué datos tratamos",
+             "<ul><li><b>Email de tu cuenta de Panasonic</b>, para identificar tu vinculación.</li>"
+             "<li><b>Token de sesión de Panasonic</b> (no tu contraseña), guardado cifrado, para "
+             "enviar las órdenes a tu equipo.</li>"
+             "<li><b>Código de acceso</b> con el que vinculaste la skill y la fecha de uso.</li>"
+             "<li><b>Tokens de vinculación con Alexa</b>, guardados de forma irreversible (hash).</li>"
+             "<li><b>Registros técnicos</b> (tipo de orden, fecha y errores), sin contenido personal.</li></ul>"
+             "<b>Tu contraseña de Panasonic nunca se guarda</b>: solo se usa en el momento de "
+             "vincular para iniciar sesión en Panasonic. El estado y las temperaturas de tu equipo "
+             "se consultan en tiempo real y no se almacenan."),
+            ("Para qué",
+             "Únicamente para ejecutar las órdenes que das a Alexa y mostrar el estado de tus "
+             "dispositivos. No se usan para publicidad, perfiles ni ningún otro fin, y "
+             "<b>no se venden ni se ceden a terceros</b>."),
+            ("Base legal",
+             "La prestación del servicio que solicitas al activar y vincular la skill, y tu "
+             "consentimiento al hacerlo."),
+            ("Dónde se guardan y quién interviene",
+             "Los datos se alojan en Amazon Web Services, en la Unión Europea (Irlanda). "
+             "Intervienen, cada uno con su propia política de privacidad: Amazon (Alexa), que "
+             "transmite tus órdenes, y Panasonic (Comfort Cloud), que ejecuta las órdenes en tu "
+             "equipo."),
+            ("Cuánto tiempo",
+             "Mientras la skill esté vinculada. Si pides la baja o se anula tu código, tus datos "
+             "se eliminan en un plazo máximo de 30 días. Los registros técnicos se conservan como "
+             "máximo 30 días."),
+            ("Tus derechos",
+             "Puedes pedir acceso, rectificación, supresión, limitación u oposición escribiendo a "
+             "{email}. También puedes desactivar la skill en la app de Alexa y cambiar tu "
+             "contraseña de Panasonic para invalidar el acceso. Si consideras que no se han "
+             "atendido tus derechos, puedes reclamar ante la Agencia Española de Protección de "
+             "Datos (www.aepd.es)."),
+            ("Menores",
+             "La skill no está dirigida a menores de edad."),
+            ("Cambios",
+             "Si esta política cambia, se publicará aquí la nueva versión. Última actualización: "
+             "{updated}."),
+        ],
+    },
+    "en": {
+        "title": "Privacy policy — My Aerotermia",
+        "sections": [
+            ("Who is responsible",
+             "My Aerotermia is a private Alexa skill developed and operated by {owner} as a "
+             "private individual. Contact: {email}."),
+            ("What the skill does",
+             "It lets you control a Panasonic Aquarea air-to-water heat pump connected to "
+             "Panasonic Comfort Cloud from Alexa: turn cooling, heating and domestic hot water on "
+             "or off. It is an independent project, not affiliated with or endorsed by Panasonic."),
+            ("What data we process",
+             "<ul><li><b>Your Panasonic account email</b>, to identify your link.</li>"
+             "<li><b>Your Panasonic session token</b> (not your password), stored encrypted, to "
+             "send commands to your unit.</li>"
+             "<li><b>The access code</b> you used to link the skill and when it was used.</li>"
+             "<li><b>Alexa account-linking tokens</b>, stored irreversibly (hashed).</li>"
+             "<li><b>Technical logs</b> (command type, time and errors) without personal content.</li></ul>"
+             "<b>Your Panasonic password is never stored</b>: it is only used once, while linking, "
+             "to sign in to Panasonic. Your unit's state and temperatures are read in real time "
+             "and not stored."),
+            ("Why",
+             "Only to carry out the commands you give Alexa and to report your devices' state. "
+             "Data is not used for advertising or profiling and is <b>never sold or shared with "
+             "third parties</b>."),
+            ("Legal basis",
+             "Providing the service you request when you enable and link the skill, and your "
+             "consent when doing so."),
+            ("Where data is stored and who is involved",
+             "Data is hosted on Amazon Web Services in the European Union (Ireland). Each under "
+             "its own privacy policy, Amazon (Alexa) relays your commands and Panasonic (Comfort "
+             "Cloud) carries them out on your unit."),
+            ("How long",
+             "While the skill is linked. If you ask to leave or your code is revoked, your data is "
+             "deleted within 30 days. Technical logs are kept for at most 30 days."),
+            ("Your rights",
+             "You can request access, rectification, erasure, restriction or object by writing "
+             "to {email}. You can also disable the skill in the Alexa app and change your "
+             "Panasonic password to invalidate access. You may lodge a complaint with the Spanish "
+             "Data Protection Agency (www.aepd.es)."),
+            ("Children",
+             "The skill is not directed at children."),
+            ("Changes",
+             "Any new version of this policy will be published here. Last updated: {updated}."),
+        ],
+    },
+}
+
+
+def privacy_page(lang: str) -> dict:
+    data = PRIVACY[lang]
+    email = html.escape(CONTACT_EMAIL) if CONTACT_EMAIL else "—"
+    if CONTACT_EMAIL:
+        email = f'<a href="mailto:{email}">{email}</a>'
+    other = "en" if lang == "es" else "es"
+    body = (f"<style>main{{max-width:720px}}h2{{font-size:17px;margin:22px 0 6px}}"
+            f"ul{{padding-left:20px;line-height:1.45}}</style>"
+            f"<h1>{html.escape(data['title'])}</h1>"
+            f'<p class="small"><a href="/privacy?lang={other}">'
+            f'{"English" if other == "en" else "Español"}</a></p>')
+    for heading, text in data["sections"]:
+        body += (f"<h2>{html.escape(heading)}</h2><p>"
+                 + text.format(owner=html.escape(OWNER_NAME), email=email,
+                               updated=PRIVACY_UPDATED) + "</p>")
+    resp = page(lang, body)
+    resp["body"] = resp["body"].replace(f"<title>{html.escape(TEXTS[lang]['title'])}</title>",
+                                        f"<title>{html.escape(data['title'])}</title>")
+    return resp
 
 
 def message_page(lang: str, key: str, status: int = 400) -> dict:
@@ -991,6 +1118,10 @@ def handle_http(event: dict) -> dict:
         return LOOP.run_until_complete(http_mfa_post(lang, parse_form(event)))
     if path == "/token" and method == "POST":
         return http_token(headers, parse_form(event))
+    if path in ("/privacy", "/privacidad") and method == "GET":
+        q = event.get("queryStringParameters") or {}
+        wanted = q.get("lang") if q.get("lang") in ("es", "en") else lang
+        return privacy_page(wanted)
     if path == "/bg.jpg" and method == "GET":
         return static_file("bg.jpg", "image/jpeg")
     if path == "/" and method == "GET":
@@ -1111,12 +1242,28 @@ def handle_admin(args: dict) -> dict:
         deleted = []
         for pk in pks:
             item = table().get_item(Key={"pk": pk}).get("Item") or {}
-            if item.get("uid"):
-                revoke_user(item["uid"])       # a deleted code also cuts that household
+            if item.get("uid"):                # a deleted code also cuts that household
+                table().delete_item(Key={"pk": f"user#{item['uid']}"})   # and erases its data
             table().delete_item(Key={"pk": pk})
             deleted.append(index.pop(pk))
         _save_invite_index(index)
         return {"ok": True, "deleted": deleted}
+
+    if action == "forget":
+        # Erase a household's personal data (privacy request) by Panasonic email.
+        email = str(args.get("email", "")).strip().lower()
+        if not email:
+            return {"ok": False, "error": "email required"}
+        uid = user_id_for(email)
+        existed = bool(get_user(uid))
+        table().delete_item(Key={"pk": f"user#{uid}"})
+        for pk in index:
+            item = table().get_item(Key={"pk": pk}).get("Item") or {}
+            if item.get("uid") == uid:
+                table().put_item(Item={k: v for k, v in item.items()
+                                       if k not in ("uid", "email", "used_at")}
+                                 | {"status": "revoked"})
+        return {"ok": True, "erased": existed, "email": email}
 
     if action == "reset":
         # Free a code so it can be used with a different Panasonic account.
@@ -1131,7 +1278,7 @@ def handle_admin(args: dict) -> dict:
                                    if k not in ("uid", "email", "used_at")} | {"status": "unused"})
         return {"ok": True, "reset": [_describe(pk, index[pk]) for pk in pks]}
 
-    return {"ok": False, "error": "action must be create, list, revoke, restore, reset or delete"}
+    return {"ok": False, "error": "action must be create, list, revoke, restore, reset, delete or forget"}
 
 
 # --------------------------------------------------------------------------
