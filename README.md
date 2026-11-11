@@ -46,12 +46,32 @@ Storage is one DynamoDB table (`pk` string partition key, TTL on `ttl`):
 
 **Panasonic passwords are never stored.**
 
-### Private use (community code)
+### Private use (household codes)
 
-If `INVITE_CODE` is set, the linking page first asks for that code (case, spaces and
-dashes are ignored) and only then shows the Panasonic sign-in. If `REVIEW_CODE` is set,
-entering it links a simulated heat pump stored in DynamoDB (`demo#state`), so Amazon
-reviewers can test discovery and on/off without touching any real unit.
+Linking always starts with a code (set `OPEN_SIGNUP=true` to disable this).
+Each household gets its own 10-digit code; the first Panasonic account that uses it
+is bound to it, so a shared code does not work for anyone else. Codes are stored
+hashed (lookup) and Fernet-encrypted (so the admin list can show them).
+
+Manage codes from the Lambda console → **Test** tab with an event like:
+
+```json
+{ "admin": { "action": "create", "labels": ["3º 2ª", "Bajo 1ª"] } }
+{ "admin": { "action": "list" } }
+{ "admin": { "action": "revoke",  "label": "3º 2ª" } }
+{ "admin": { "action": "restore", "code": "1234567890" } }
+{ "admin": { "action": "reset",   "label": "3º 2ª" } }
+```
+
+`revoke` stops that household immediately (Alexa asks them to link again),
+`restore` undoes it, `reset` frees the code for a different Panasonic account.
+Admin events are only accepted as raw Lambda events (console Test / AWS CLI), never
+through the Function URL or from Alexa.
+
+`INVITE_CODE` (optional, legacy) is one shared code accepted for everybody.
+If `REVIEW_CODE` is set, entering it links a simulated heat pump stored in DynamoDB
+(`demo#state`), so Amazon reviewers can test discovery and on/off without touching
+any real unit.
 
 ## Repository layout
 
@@ -71,7 +91,7 @@ source .venv/bin/activate
 pip install -r requirements-dev.txt
 
 python tests/test_lambda.py        # offline tests
-python tests/test_codes.py         # community code + reviewer demo tests
+python tests/test_codes.py         # household codes, admin actions, reviewer demo
 python tools/aquarea_test.py       # read-only test against your Panasonic account
 ./build.sh                         # -> dist/my-aerotermia-lambda.zip
 ```
@@ -90,7 +110,8 @@ python tools/aquarea_test.py       # read-only test against your Panasonic accou
    | `OAUTH_CLIENT_ID` | `my-aerotermia-alexa` |
    | `OAUTH_CLIENT_SECRET` | `python3 -c "import secrets;print(secrets.token_urlsafe(32))"` |
    | `NAME_COOL`, `NAME_HEAT`, `NAME_DHW` | optional device names |
-   | `INVITE_CODE` | optional community code asked before the Panasonic sign-in |
+   | `INVITE_CODE` | optional shared code for everybody (leave empty to use household codes only) |
+   | `OPEN_SIGNUP` | `true` to allow linking without any code (default: code required) |
    | `REVIEW_CODE` | optional secret code that links a **simulated** heat pump (for Amazon certification reviewers) |
 
 4. **IAM**: inline policy on the execution role allowing `dynamodb:GetItem`, `PutItem`,

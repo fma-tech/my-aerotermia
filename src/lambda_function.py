@@ -30,7 +30,10 @@ Environment variables:
   OAUTH_CLIENT_ID      must match the Client ID set in the Alexa console
   OAUTH_CLIENT_SECRET  must match the Client Secret set in the Alexa console
   NAME_COOL / NAME_HEAT / NAME_DHW   optional device names shown in Alexa
-  INVITE_CODE          optional: community code asked before the Panasonic sign-in
+  INVITE_CODE          optional: one shared code accepted for everybody (legacy)
+  OPEN_SIGNUP          "true" to allow linking without any code (default: code required)
+  Personal codes       10-digit codes, one per household, managed with admin events
+                       run from the Lambda console "Test" tab (see handle_admin)
   REVIEW_CODE          optional: secret code that links a simulated heat pump
                        (for Amazon certification reviewers; no real device)
 """
@@ -79,6 +82,8 @@ OAUTH_CLIENT_ID = os.environ.get("OAUTH_CLIENT_ID", "")
 OAUTH_CLIENT_SECRET = os.environ.get("OAUTH_CLIENT_SECRET", "")
 INVITE_CODE = os.environ.get("INVITE_CODE", "")
 REVIEW_CODE = os.environ.get("REVIEW_CODE", "")
+OPEN_SIGNUP = os.environ.get("OPEN_SIGNUP", "").lower() == "true"
+INVITE_INDEX = "invites#index"
 DEMO_UID = "demo-reviewer"
 DEMO_LONG_ID = "DEMO000001"
 NAMES = {
@@ -160,14 +165,27 @@ def user_id_for(email: str) -> str:
     return sha(email.strip().lower())[:32]
 
 
-def save_user(uid: str, email: str, refresh_token: str) -> None:
-    table().put_item(Item={
+def save_user(uid: str, email: str, refresh_token: str, invite: str | None = None) -> None:
+    item = {
         "pk": f"user#{uid}",
         "email": email.strip().lower(),
         "rt": fernet().encrypt(refresh_token.encode()).decode(),
         "revoked": False,
         "updated": now(),
-    })
+    }
+    if invite:
+        item["invite"] = invite
+    table().put_item(Item=item)
+
+
+def bind_invite(pk: str, uid: str, email: str) -> None:
+    table().update_item(
+        Key={"pk": pk},
+        UpdateExpression="SET #s = :s, uid = :u, email = :e, used_at = :t",
+        ExpressionAttributeNames={"#s": "status"},
+        ExpressionAttributeValues={":s": "used", ":u": uid, ":e": email.strip().lower(),
+                                   ":t": now()},
+    )
 
 
 def update_user_token(uid: str, refresh_token: str) -> None:
@@ -505,6 +523,11 @@ async def handle_directive(directive: dict) -> dict:
     uid, err = user_from_token(token)
     if err:
         return error_response(directive, err, "Account link expired or invalid")
+    user = get_user(uid)
+    if not user or user.get("revoked"):
+        await drop_session(uid)
+        return error_response(directive, "INVALID_AUTHORIZATION_CREDENTIAL",
+                              "Access revoked or account must be linked again")
 
     try:
         entry = await panasonic_for(uid)
@@ -602,10 +625,11 @@ TEXTS = {
                            "(use SMS or an authenticator app).",
         "error": "Something went wrong. Please try again.",
         "bad_request": "Invalid request. Start the linking from the Alexa app.",
-        "invite_title": "Community code",
-        "invite_intro": "This skill is private. Enter the code your community gave you.",
+        "invite_title": "Access code",
+        "invite_intro": "This skill is private. Enter the personal access code you received.",
         "invite_label": "Code", "invite_submit": "Continue",
         "bad_invite": "Invalid code.",
+        "code_used": "This code has already been used with another Panasonic account.",
     },
     "es": {
         "title": "Vincula tu aerotermia",
@@ -625,10 +649,11 @@ TEXTS = {
                            "(usa SMS o una app de códigos).",
         "error": "Algo ha fallado. Inténtalo de nuevo.",
         "bad_request": "Petición no válida. Empieza la vinculación desde la app de Alexa.",
-        "invite_title": "Código de la comunidad",
-        "invite_intro": "Esta skill es privada. Introduce el código que te ha dado tu comunidad.",
+        "invite_title": "Código de acceso",
+        "invite_intro": "Esta skill es privada. Introduce el código de acceso personal que has recibido.",
         "invite_label": "Código", "invite_submit": "Continuar",
         "bad_invite": "Código no válido.",
+        "code_used": "Este código ya se ha usado con otra cuenta de Panasonic.",
     },
 }
 
@@ -641,9 +666,13 @@ def lang_of(headers: dict) -> str:
 PAGE = """<!doctype html><html lang="{lang}"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{title}</title><style>
-body{{font-family:-apple-system,system-ui,Segoe UI,Roboto,sans-serif;background:#f4f6f8;margin:0;
-padding:24px 16px;color:#1d2731}}main{{max-width:420px;margin:0 auto;background:#fff;
-border-radius:14px;padding:28px 24px;box-shadow:0 2px 12px rgba(0,0,0,.08)}}
+html{{min-height:100%;background:#0b1622}}
+body{{font-family:-apple-system,system-ui,Segoe UI,Roboto,sans-serif;margin:0;min-height:100vh;
+min-height:100dvh;box-sizing:border-box;padding:24px 16px;color:#1d2731;
+display:flex;align-items:center;justify-content:center;
+background:linear-gradient(rgba(8,18,30,.30),rgba(8,18,30,.50)),url(/bg.jpg) center/cover no-repeat #0b1622}}
+main{{width:100%;max-width:420px;box-sizing:border-box;margin:0 auto;background:rgba(255,255,255,.96);
+border-radius:14px;padding:28px 24px;box-shadow:0 8px 30px rgba(0,0,0,.35)}}
 h1{{font-size:22px;margin:0 0 8px}}p{{line-height:1.45}}label{{display:block;font-weight:600;
 margin:16px 0 6px}}input{{width:100%;box-sizing:border-box;padding:12px;font-size:16px;
 border:1px solid #c9d1d9;border-radius:8px}}button{{margin-top:22px;width:100%;padding:13px;
@@ -684,20 +713,34 @@ def norm_code(value: str) -> str:
     return re.sub(r"[\s\-_.]", "", value or "").casefold()
 
 
+def invite_pk(value: str) -> str:
+    return f"invite#{sha(norm_code(value))}"
+
+
+def get_invite(value: str) -> dict | None:
+    if not norm_code(value):
+        return None
+    return table().get_item(Key={"pk": invite_pk(value)}).get("Item")
+
+
 def code_kind(value: str) -> str | None:
-    """'review' for the reviewer code, 'invite' for the community code, else None."""
+    """'review' (reviewer demo), 'personal' (household code), 'invite' (shared code
+    or open sign-up) or None (not valid)."""
     v = norm_code(value)
     if REVIEW_CODE and v and hmac.compare_digest(v, norm_code(REVIEW_CODE)):
         return "review"
-    if not INVITE_CODE:
-        return "invite"            # no community code configured: open sign-in
-    if v and hmac.compare_digest(v, norm_code(INVITE_CODE)):
+    item = get_invite(v)
+    if item and item.get("status") != "revoked":
+        return "personal"
+    if INVITE_CODE and v and hmac.compare_digest(v, norm_code(INVITE_CODE)):
+        return "invite"
+    if OPEN_SIGNUP:
         return "invite"
     return None
 
 
 def codes_enabled() -> bool:
-    return bool(INVITE_CODE or REVIEW_CODE)
+    return not OPEN_SIGNUP
 
 
 def code_page(lang: str, params: dict, error: str | None = None) -> dict:
@@ -719,7 +762,7 @@ def http_code_post(lang: str, form: dict) -> dict:
     if kind == "review":
         save_demo_user()
         return redirect_with_code(params, DEMO_UID)
-    if kind == "invite":
+    if kind in ("invite", "personal"):
         return login_page(lang, {**params, "invite": form.get("invite", "")})
     return code_page(lang, params, "bad_invite")
 
@@ -774,7 +817,14 @@ async def finish_link(lang: str, params: dict, email: str, client: Client) -> di
     if not token:
         return message_page(lang, "no_token", 502)
     uid = user_id_for(email)
-    save_user(uid, email, token)
+    invite = get_invite(params.get("invite", ""))
+    if invite:
+        if invite.get("status") == "revoked":
+            return message_page(lang, "bad_invite")
+        if invite.get("uid") and invite["uid"] != uid:
+            return message_page(lang, "code_used")
+        bind_invite(invite["pk"], uid, email)
+    save_user(uid, email, token, invite["pk"] if invite else None)
     await drop_session(uid)          # forget any old cached session for this user
     return redirect_with_code(params, uid)
 
@@ -790,7 +840,7 @@ async def http_authorize_post(lang: str, form: dict) -> dict:
     params = oauth_params(form)
     if not params:
         return message_page(lang, "bad_request")
-    if code_kind(form.get("invite", "")) != "invite":
+    if code_kind(form.get("invite", "")) not in ("invite", "personal"):
         return code_page(lang, params, "bad_invite" if form.get("invite") else None)
     params = {**params, "invite": form.get("invite", "")}
     email = (form.get("email") or "").strip()
@@ -901,6 +951,20 @@ def http_token(headers: dict, form: dict) -> dict:
     return json_response(400, {"error": "unsupported_grant_type"})
 
 
+_STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+
+
+def static_file(name: str, content_type: str) -> dict:
+    try:
+        with open(os.path.join(_STATIC, name), "rb") as f:
+            data = f.read()
+    except OSError:
+        return {"statusCode": 404, "headers": {"Content-Type": "text/plain"}, "body": "Not found"}
+    return {"statusCode": 200, "isBase64Encoded": True,
+            "headers": {"Content-Type": content_type, "Cache-Control": "public, max-age=86400"},
+            "body": base64.b64encode(data).decode()}
+
+
 def parse_form(event: dict) -> dict:
     body = event.get("body") or ""
     if event.get("isBase64Encoded"):
@@ -927,6 +991,8 @@ def handle_http(event: dict) -> dict:
         return LOOP.run_until_complete(http_mfa_post(lang, parse_form(event)))
     if path == "/token" and method == "POST":
         return http_token(headers, parse_form(event))
+    if path == "/bg.jpg" and method == "GET":
+        return static_file("bg.jpg", "image/jpeg")
     if path == "/" and method == "GET":
         return {"statusCode": 200, "headers": {"Content-Type": "text/plain"},
                 "body": "My Aerotermia is running."}
@@ -934,9 +1000,117 @@ def handle_http(event: dict) -> dict:
 
 
 # --------------------------------------------------------------------------
+# Admin (only reachable with a raw event from the Lambda console "Test" tab or
+# the AWS CLI; Alexa and the Function URL cannot send this shape)
+# --------------------------------------------------------------------------
+def _invite_index() -> dict:
+    item = table().get_item(Key={"pk": INVITE_INDEX}).get("Item") or {}
+    return dict(item.get("codes") or {})
+
+
+def _save_invite_index(index: dict) -> None:
+    table().put_item(Item={"pk": INVITE_INDEX, "codes": index})
+
+
+def _new_code(existing: set) -> str:
+    while True:
+        code = f"{secrets.randbelow(10**10):010d}"
+        if code[0] != "0" and invite_pk(code) not in existing:
+            return code
+
+
+def _describe(pk: str, label: str) -> dict:
+    item = table().get_item(Key={"pk": pk}).get("Item") or {}
+    try:
+        code = fernet().decrypt(item["code_enc"].encode()).decode()
+    except Exception:
+        code = "?"
+    return {"label": label, "code": code, "status": item.get("status", "?"),
+            "email": item.get("email", ""), "used_at": item.get("used_at")}
+
+
+def _find(index: dict, args: dict) -> list[str]:
+    if args.get("code"):
+        pk = invite_pk(str(args["code"]))
+        return [pk] if pk in index else []
+    label = str(args.get("label", "")).strip().lower()
+    return [pk for pk, lb in index.items() if label and lb.strip().lower() == label]
+
+
+def handle_admin(args: dict) -> dict:
+    action = args.get("action")
+    index = _invite_index()
+
+    if action == "create":
+        labels = args.get("labels") or [f"code-{i + 1}" for i in range(int(args.get("count", 1)))]
+        created = []
+        for label in labels:
+            code = _new_code(set(index))
+            pk = invite_pk(code)
+            table().put_item(Item={"pk": pk, "label": str(label), "status": "unused",
+                                   "code_enc": fernet().encrypt(code.encode()).decode(),
+                                   "created": now()})
+            index[pk] = str(label)
+            created.append({"label": str(label), "code": code})
+        _save_invite_index(index)
+        return {"ok": True, "created": created}
+
+    if action == "list":
+        rows = [_describe(pk, label) for pk, label in index.items()]
+        rows.sort(key=lambda r: r["label"])
+        return {"ok": True, "total": len(rows),
+                "used": sum(r["status"] == "used" for r in rows), "codes": rows}
+
+    if action in ("revoke", "restore"):
+        pks = _find(index, args)
+        if not pks:
+            return {"ok": False, "error": "code or label not found"}
+        for pk in pks:
+            item = table().get_item(Key={"pk": pk}).get("Item") or {}
+            if action == "revoke":
+                table().update_item(Key={"pk": pk}, UpdateExpression="SET #s = :s",
+                                    ExpressionAttributeNames={"#s": "status"},
+                                    ExpressionAttributeValues={":s": "revoked"})
+                if item.get("uid"):
+                    revoke_user(item["uid"])
+            else:
+                status = "used" if item.get("uid") else "unused"
+                table().update_item(Key={"pk": pk}, UpdateExpression="SET #s = :s",
+                                    ExpressionAttributeNames={"#s": "status"},
+                                    ExpressionAttributeValues={":s": status})
+                if item.get("uid"):
+                    table().update_item(Key={"pk": f"user#{item['uid']}"},
+                                        UpdateExpression="SET revoked = :r",
+                                        ExpressionAttributeValues={":r": False})
+        return {"ok": True, action + "d": [_describe(pk, index[pk]) for pk in pks]}
+
+    if action == "reset":
+        # Free a code so it can be used with a different Panasonic account.
+        pks = _find(index, args)
+        if not pks:
+            return {"ok": False, "error": "code or label not found"}
+        for pk in pks:
+            item = table().get_item(Key={"pk": pk}).get("Item") or {}
+            if item.get("uid"):
+                revoke_user(item["uid"])
+            table().put_item(Item={k: v for k, v in item.items()
+                                   if k not in ("uid", "email", "used_at")} | {"status": "unused"})
+        return {"ok": True, "reset": [_describe(pk, index[pk]) for pk in pks]}
+
+    return {"ok": False, "error": "action must be create, list, revoke, restore or reset"}
+
+
+# --------------------------------------------------------------------------
 # Entry point
 # --------------------------------------------------------------------------
 def lambda_handler(event, context):
+    if "admin" in event and "requestContext" not in event:
+        try:
+            return handle_admin(event["admin"] or {})
+        except Exception as err:
+            LOGGER.exception("Admin action failed")
+            return {"ok": False, "error": str(err)}
+
     if "directive" in event:
         directive = event["directive"]
         LOGGER.info("Directive %s.%s", directive["header"]["namespace"],

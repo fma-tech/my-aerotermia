@@ -3,7 +3,8 @@ import base64, json, os, re, sys, time, urllib.parse
 from cryptography.fernet import Fernet
 
 os.environ.update(FERNET_KEY=Fernet.generate_key().decode(), OAUTH_CLIENT_ID="alexa-skill",
-                  OAUTH_CLIENT_SECRET="s3cr3t", TABLE_NAME="t", AWS_DEFAULT_REGION="eu-west-1")
+                  OAUTH_CLIENT_SECRET="s3cr3t", TABLE_NAME="t", AWS_DEFAULT_REGION="eu-west-1",
+                  OPEN_SIGNUP="true")
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 import lambda_function as L
 from aioaquarea import (AuthenticationError, ExtendedOperationMode as X, MfaRequiredError,
@@ -18,11 +19,11 @@ class Table:
     def get_item(s, Key):
         i = s.d.get(Key["pk"]); return {"Item": dict(i)} if i else {}
     def delete_item(s, Key): s.d.pop(Key["pk"], None)
-    def update_item(s, Key, UpdateExpression, ExpressionAttributeValues):
+    def update_item(s, Key, UpdateExpression, ExpressionAttributeValues, ExpressionAttributeNames=None):
         it = s.d.setdefault(Key["pk"], {"pk": Key["pk"]})
         for part in UpdateExpression[4:].split(","):
             k, v = [x.strip() for x in part.split("=")]
-            it[k] = ExpressionAttributeValues[v]
+            it[(ExpressionAttributeNames or {}).get(k, k)] = ExpressionAttributeValues[v]
 TABLE = Table(); L._table = TABLE
 
 # ---------------- fake Panasonic ----------------

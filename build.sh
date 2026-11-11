@@ -28,5 +28,6 @@ rm -rf build/pkg/boto3 build/pkg/botocore build/pkg/bin
 find build/pkg -name "__pycache__" -type d -prune -exec rm -rf {} +
 
 cp src/lambda_function.py build/pkg/
+[ -d src/static ] && cp -R src/static build/pkg/
 (cd build/pkg && zip -qr9 ../../dist/my-aerotermia-lambda.zip .)
 echo "Built dist/my-aerotermia-lambda.zip for $ARCH ($(du -h dist/my-aerotermia-lambda.zip | cut -f1))"
