@@ -1030,11 +1030,19 @@ def _describe(pk: str, label: str) -> dict:
 
 
 def _find(index: dict, args: dict) -> list[str]:
-    if args.get("code"):
-        pk = invite_pk(str(args["code"]))
-        return [pk] if pk in index else []
-    label = str(args.get("label", "")).strip().lower()
-    return [pk for pk, lb in index.items() if label and lb.strip().lower() == label]
+    """Select codes by "code", "codes", "label", "labels", "label_prefix" or "all": true."""
+    if args.get("all") is True:
+        return list(index)
+    codes = [args["code"]] if args.get("code") else list(args.get("codes") or [])
+    labels = [args["label"]] if args.get("label") else list(args.get("labels") or [])
+    wanted_labels = {str(lb).strip().lower() for lb in labels if str(lb).strip()}
+    prefix = str(args.get("label_prefix", "")).strip().lower()
+    found = [invite_pk(str(c)) for c in codes if invite_pk(str(c)) in index]
+    for pk, lb in index.items():
+        name = lb.strip().lower()
+        if (name in wanted_labels or (prefix and name.startswith(prefix))) and pk not in found:
+            found.append(pk)
+    return found
 
 
 def handle_admin(args: dict) -> dict:
@@ -1042,9 +1050,21 @@ def handle_admin(args: dict) -> dict:
     index = _invite_index()
 
     if action == "create":
-        labels = args.get("labels") or [f"code-{i + 1}" for i in range(int(args.get("count", 1)))]
-        created = []
+        existing = {lb.strip().lower() for lb in index.values()}
+        if args.get("labels"):
+            labels = [str(lb) for lb in args["labels"]]
+        else:
+            labels, n = [], 1
+            while len(labels) < int(args.get("count", 1)):
+                if f"code-{n}" not in existing:
+                    labels.append(f"code-{n}")
+                n += 1
+        created, skipped = [], []
         for label in labels:
+            if label.strip().lower() in existing:
+                skipped.append(label)          # that household already has a code
+                continue
+            existing.add(label.strip().lower())
             code = _new_code(set(index))
             pk = invite_pk(code)
             table().put_item(Item={"pk": pk, "label": str(label), "status": "unused",
@@ -1053,7 +1073,7 @@ def handle_admin(args: dict) -> dict:
             index[pk] = str(label)
             created.append({"label": str(label), "code": code})
         _save_invite_index(index)
-        return {"ok": True, "created": created}
+        return {"ok": True, "created": created, "skipped_existing": skipped}
 
     if action == "list":
         rows = [_describe(pk, label) for pk, label in index.items()]
@@ -1084,6 +1104,20 @@ def handle_admin(args: dict) -> dict:
                                         ExpressionAttributeValues={":r": False})
         return {"ok": True, action + "d": [_describe(pk, index[pk]) for pk in pks]}
 
+    if action == "delete":
+        pks = _find(index, args)
+        if not pks:
+            return {"ok": False, "error": "code or label not found"}
+        deleted = []
+        for pk in pks:
+            item = table().get_item(Key={"pk": pk}).get("Item") or {}
+            if item.get("uid"):
+                revoke_user(item["uid"])       # a deleted code also cuts that household
+            table().delete_item(Key={"pk": pk})
+            deleted.append(index.pop(pk))
+        _save_invite_index(index)
+        return {"ok": True, "deleted": deleted}
+
     if action == "reset":
         # Free a code so it can be used with a different Panasonic account.
         pks = _find(index, args)
@@ -1097,7 +1131,7 @@ def handle_admin(args: dict) -> dict:
                                    if k not in ("uid", "email", "used_at")} | {"status": "unused"})
         return {"ok": True, "reset": [_describe(pk, index[pk]) for pk in pks]}
 
-    return {"ok": False, "error": "action must be create, list, revoke, restore or reset"}
+    return {"ok": False, "error": "action must be create, list, revoke, restore, reset or delete"}
 
 
 # --------------------------------------------------------------------------

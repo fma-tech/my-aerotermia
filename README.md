@@ -61,10 +61,17 @@ Manage codes from the Lambda console → **Test** tab with an event like:
 { "admin": { "action": "revoke",  "label": "3º 2ª" } }
 { "admin": { "action": "restore", "code": "1234567890" } }
 { "admin": { "action": "reset",   "label": "3º 2ª" } }
+{ "admin": { "action": "delete",  "label_prefix": "code-" } }
+{ "admin": { "action": "delete",  "all": true } }
 ```
 
+`create` skips labels that already have a code, so re-running it is safe.
+Every action except `create`/`list` selects codes with `code`, `codes`, `label`,
+`labels`, `label_prefix` or `"all": true`.
+
 `revoke` stops that household immediately (Alexa asks them to link again),
-`restore` undoes it, `reset` frees the code for a different Panasonic account.
+`restore` undoes it, `reset` frees the code for a different Panasonic account,
+`delete` removes the code completely (and cuts the household that used it).
 Admin events are only accepted as raw Lambda events (console Test / AWS CLI), never
 through the Function URL or from Alexa.
 
