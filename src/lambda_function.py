@@ -788,10 +788,10 @@ def mfa_page(lang: str, nonce: str, destination: str | None, error: str | None =
 
 PRIVACY = {
     "es": {
-        "title": "Política de privacidad — My Aerotermia",
+        "title": "Política de privacidad — Mi Aerotermia",
         "sections": [
             ("Quién es el responsable",
-             "My Aerotermia es una skill privada de Alexa desarrollada y gestionada por "
+             "Mi Aerotermia es una skill privada de Alexa desarrollada y gestionada por "
              "{owner}, a título particular. Contacto: {email}."),
             ("Qué hace la skill",
              "Permite controlar desde Alexa una bomba de calor (aerotermia) Panasonic Aquarea "
@@ -838,10 +838,10 @@ PRIVACY = {
         ],
     },
     "en": {
-        "title": "Privacy policy — My Aerotermia",
+        "title": "Privacy policy — Mi Aerotermia",
         "sections": [
             ("Who is responsible",
-             "My Aerotermia is a private Alexa skill developed and operated by {owner} as a "
+             "Mi Aerotermia is a private Alexa skill developed and operated by {owner} as a "
              "private individual. Contact: {email}."),
             ("What the skill does",
              "It lets you control a Panasonic Aquarea air-to-water heat pump connected to "
